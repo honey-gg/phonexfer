@@ -5,8 +5,9 @@ set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")" && pwd)"
 APP="${1:-$HOME/Applications/手机互传.app}"
-PYV="/Users/lkgs/.workbuddy/binaries/python/versions/3.13.12"
-VENV="/Users/lkgs/.workbuddy/binaries/python/envs/default"
+# 可用环境变量覆盖；默认走 WorkBuddy 内置 Python
+PYV="${PYV:-$HOME/.workbuddy/binaries/python/versions/3.13.12}"
+VENV="${VENV:-$HOME/.workbuddy/binaries/python/envs/default}"
 PY="$VENV/bin/python"
 
 echo "==> 源目录: $SRC"
