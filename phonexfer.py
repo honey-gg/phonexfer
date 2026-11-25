@@ -26,6 +26,7 @@ from urllib.parse import quote, unquote, urlparse, parse_qs
 
 CHUNK = 1 << 18  # 256 KB
 DEFAULT_RECV_DIR = "~/Downloads/手机传入"
+DEFAULT_SEND_DIR = "~/Desktop"
 
 BASE_CSS = """
 :root{color-scheme:dark}
@@ -39,6 +40,53 @@ h1{font-size:20px;font-weight:500;margin:0 0 4px}
 .note{margin-top:24px;padding:12px 14px;background:#2a2113;border-radius:10px;
       font-size:13px;color:#ef9f27}
 """
+
+ERROR_HTML = r"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>__TITLE__</title>
+<style>__CSS__
+.err{margin-top:20px;padding:16px;border-radius:12px;background:#2a1717;
+     color:#f0a0a0;font-size:13px;word-break:break-all;line-height:1.7}
+.err b{color:#f5c2c2;font-weight:500}
+ol{margin:12px 0 0;padding-left:20px;color:#c9c9c9;font-size:14px}
+ol li{margin:6px 0}
+</style>
+</head>
+<body>
+<h1>__TITLE__</h1>
+<p class="sub">__SUB__</p>
+__EXTRA__
+<div class="foot">phonexfer</div>
+</body>
+</html>
+"""
+
+
+def error_page(title, sub, extra=""):
+    """给手机端看的可读错误页（替代裸 JSON）。"""
+    return (ERROR_HTML
+            .replace("__CSS__", BASE_CSS)
+            .replace("__TITLE__", html.escape(title))
+            .replace("__SUB__", html.escape(sub))
+            .replace("__EXTRA__", extra))
+
+
+def readable(target):
+    """探测路径能否被当前进程读取（macOS TCC 会在这里拦下 Downloads / Desktop）。"""
+    try:
+        if os.path.isdir(target):
+            os.listdir(target)
+        else:
+            with open(target, "rb"):
+                pass
+        return True, ""
+    except PermissionError as exc:
+        return False, str(exc)
+    except OSError as exc:
+        return False, str(exc)
 
 RECV_HTML = r"""<!doctype html>
 <html lang="zh-CN">
@@ -847,8 +895,23 @@ class SendHandler(Base):
         try:
             names = sorted(os.listdir(directory),
                            key=lambda s: (not os.path.isdir(os.path.join(directory, s)), s.lower()))
+        except PermissionError:
+            self._send(200, error_page(
+                "电脑没有授权访问这个文件夹",
+                "手机端收到的是系统权限拦截，不是网络问题。",
+                '<div class="err"><b>%s</b></div>'
+                '<ol><li>回到 Mac，在「系统设置 → 隐私与安全性 → 文件与文件夹」里，'
+                '允许「手机互传 / Python」访问 <b>下载</b> 或 <b>桌面</b>。</li>'
+                '<li>或者挑一个不受保护的位置重新分享，例如「文稿」下的自建目录。</li>'
+                '<li>改完在 App 里点「停止」再「启动」。</li></ol>'
+                % html.escape(directory)), "text/html; charset=utf-8")
+            return
         except OSError as exc:
-            self._json(500, {"ok": False, "error": str(exc)})
+            self._send(200, error_page(
+                "打不开这个文件夹",
+                "电脑端读取失败。",
+                '<div class="err">%s</div>' % html.escape(str(exc))),
+                "text/html; charset=utf-8")
             return
 
         rows = []
@@ -969,6 +1032,11 @@ class SendHandler(Base):
             if self.hub is not None:
                 self.hub.failed(fname, "客户端中断")
             return
+        except OSError as exc:
+            self.log_message("读取失败：%s (%s)", fname, exc)
+            if self.hub is not None:
+                self.hub.failed(fname, "读取失败：%s" % exc)
+            return
         elapsed = max(time.time() - started, 1e-6)
         mb = length / 1048576.0
         self.log_message("已发送 %s  (%.1f MB, %.1f MB/s)", fname, mb, mb / elapsed)
@@ -1003,6 +1071,15 @@ def create_server(mode, target, host, port=8000, hub=None, tries=11):
     else:
         if not os.path.exists(target):
             raise ValueError("路径不存在：%s" % target)
+        ok, why = readable(target)
+        if not ok:
+            raise ValueError(
+                "电脑没有权限读取这个位置：\n%s\n\n"
+                "macOS 把「下载」「桌面」这类目录保护起来了，需要在\n"
+                "「系统设置 → 隐私与安全性 → 文件与文件夹」里\n"
+                "允许「手机互传」访问它，然后重开 App 再试。\n\n"
+                "也可以换一个不受保护的位置，比如「文稿」下的目录。\n\n"
+                "系统原话：%s" % (target, why))
         handler = SendHandler
         handler.root = target
     handler.hub = hub
@@ -1039,7 +1116,8 @@ def main():
     if args.mode == "recv":
         target_dir = os.path.abspath(os.path.expanduser(args.dir or DEFAULT_RECV_DIR))
     else:
-        target_dir = os.path.abspath(os.path.expanduser(args.dir or args.target or os.getcwd()))
+        target_dir = os.path.abspath(os.path.expanduser(
+            args.dir or args.target or DEFAULT_SEND_DIR))
         if not os.path.exists(target_dir):
             raise SystemExit("路径不存在：%s" % target_dir)
 

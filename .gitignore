@@ -6,3 +6,4 @@ build/
 .phonexfer-parts/
 *.log
 .venv/
+.workbuddy/

@@ -67,6 +67,7 @@ class App:
         self.q = queue.Queue()
         self.last_name = ""
         self.indet = False
+        self.user_picked = False
 
         self.mode = tk.StringVar(value="recv")
         self.path_var = tk.StringVar(value=os.path.expanduser(phonexfer.DEFAULT_RECV_DIR))
@@ -185,21 +186,29 @@ class App:
     def _sync_mode(self):
         recv = self.mode.get() == "recv"
         self.hint.configure(text="保存到这里" if recv else "把这个文件夹/文件分享出去")
-        cur = self.path_var.get()
-        dflt_recv = os.path.expanduser(phonexfer.DEFAULT_RECV_DIR)
-        if recv and not cur:
-            self.path_var.set(dflt_recv)
+        recv_dflt = os.path.expanduser(phonexfer.DEFAULT_RECV_DIR)
+        send_dflt = os.path.expanduser(getattr(phonexfer, "DEFAULT_SEND_DIR", "~/Desktop"))
+        if not os.path.isdir(send_dflt):
+            send_dflt = os.path.expanduser("~")
+        cur = self.path_var.get().strip()
+
+        # 用户自己选过的路径不动；没选过就按模式给默认值。
+        # 以前切到「发送」时仍沿用接收目录，会分享一个跟用户无关的空文件夹。
+        if not self.user_picked or cur in (recv_dflt, send_dflt):
+            self.path_var.set(recv_dflt if recv else send_dflt)
         self._set_info(False)
 
     def _pick_dir(self):
         p = filedialog.askdirectory(title="选择文件夹")
         if p:
             self.path_var.set(p)
+            self.user_picked = True
 
     def _pick_file(self):
         p = filedialog.askopenfilename(title="选择文件")
         if not p:
             return
+        self.user_picked = True
         if self.mode.get() == "recv":
             self.path_var.set(os.path.dirname(p))
             self._log("接收模式下已改用该文件所在文件夹：%s" % os.path.dirname(p))
@@ -211,12 +220,14 @@ class App:
         if not paths:
             return
         p = paths[0]
+        self.user_picked = True
         if os.path.isfile(p):
             self.mode.set("send")
             self._sync_mode()
             self.path_var.set(p)
         else:
             self.path_var.set(p)
+        self._log("已选择：%s" % p)
         self._log("已选择：%s" % p)
 
     def _copy(self):
@@ -270,10 +281,12 @@ class App:
         try:
             srv, actual = phonexfer.create_server(mode, target, ip, port, hub=hub)
         except ValueError as exc:
-            messagebox.showerror("路径有问题", str(exc))
+            messagebox.showerror("这个位置用不了", str(exc))
             return
-        except OSError as exc:
-            messagebox.showerror("端口被占用", "8000 往后的端口都试过了：%s" % exc)
+        except (OSError, SystemExit) as exc:
+            messagebox.showerror(
+                "端口被占用",
+                "从 %d 开始试了 11 个端口都被占用了。\n换个端口再试。\n\n%s" % (port, exc))
             return
 
         cls = phonexfer.RecvHandler if mode == "recv" else phonexfer.SendHandler
@@ -295,6 +308,15 @@ class App:
         self._set_info(True)
         self._log("已启动 · %s · %s" % ("接收" if mode == "recv" else "发送", target))
         self._log("地址 %s" % self.url)
+        if mode == "send":
+            try:
+                visible = [x for x in os.listdir(target) if not x.startswith(".")] \
+                    if os.path.isdir(target) else [target]
+            except OSError:
+                visible = []
+            if not visible:
+                self._log("注意：这个位置是空的，手机打开只会看到空列表。"
+                          "要传文件请先「选择文件…」或把文件拖进窗口。")
 
     def _stop(self):
         srv, self.server = self.server, None
